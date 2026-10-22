@@ -1,0 +1,90 @@
+name: Deploy portfolio to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Stage public website files
+        run: |
+          mkdir -p _site
+          cp index.html styles.css app.js signal-lab.js _site/
+          cp -R assets _site/assets
+          touch _site/.nojekyll
+
+      - name: Set public page and social image URLs
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          python3 - <<'PY'
+          import html
+          import os
+          from pathlib import Path
+          import re
+          from urllib.parse import urlsplit
+
+          base_url = os.environ["PAGES_BASE_URL"].rstrip("/")
+          parsed = urlsplit(base_url)
+          if parsed.scheme not in ("https", "http") or not parsed.netloc:
+              raise SystemExit("GitHub Pages did not provide a valid public base URL")
+
+          page_url = html.escape(base_url + "/", quote=True)
+          image_url = html.escape(base_url + "/assets/social-card.png", quote=True)
+          path = Path("_site/index.html")
+          document = path.read_text(encoding="utf-8")
+          tags = [
+              (r'<meta\b(?=[^>]*\bproperty=[\"\']og:image[\"\'])[^>]*>',
+               f'<meta property="og:image" content="{image_url}">'),
+              (r'<meta\b(?=[^>]*\bproperty=[\"\']og:url[\"\'])[^>]*>',
+               f'<meta property="og:url" content="{page_url}">'),
+              (r'<link\b(?=[^>]*\brel=[\"\']canonical[\"\'])[^>]*>',
+               f'<link rel="canonical" href="{page_url}">'),
+          ]
+          for pattern, tag in tags:
+              document, matches = re.subn(pattern, lambda match: tag, document, flags=re.I)
+              if matches > 1:
+                  raise SystemExit("Duplicate page metadata found")
+              if not matches:
+                  if "</head>" not in document:
+                      raise SystemExit("Page is missing its head closing tag")
+                  document = document.replace("</head>", f"  {tag}\n</head>", 1)
+          path.write_text(document, encoding="utf-8")
+          PY
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
